@@ -77,6 +77,7 @@ from copy import deepcopy
 from collections import defaultdict
 import threading
 import itertools
+import time
 
 from gensim.utils import keep_vocab_item
 
@@ -344,7 +345,8 @@ class Word2Vec(utils.SaveLoad):
             self, sentences=None, size=100, alpha=0.025, window=5, min_count=5,
             max_vocab_size=None, sample=1e-3, seed=1, workers=3, min_alpha=0.0001,
             sg=0, hs=0, negative=5, cbow_mean=1, hashfxn=hash, iter=5, null_word=0,
-            trim_rule=None, sorted_vocab=1, batch_words=MAX_WORDS_IN_BATCH):
+            trim_rule=None, sorted_vocab=1, batch_words=MAX_WORDS_IN_BATCH, 
+            pretrained_emb=None):
         """
         Initialize the model from an iterable of `sentences`. Each sentence is a
         list of words (unicode strings) that will be used for training.
@@ -409,6 +411,8 @@ class Word2Vec(utils.SaveLoad):
         thus cython routines). Default is 10000. (Larger batches can be passed if individual
         texts are longer, but the cython code may truncate.)
 
+        `pretrained_emb` = takes in pre-trained embedding for word vectors; format = original C word2vec-tool non-binary format (i.e. one embedding per word)
+
         """
         self.vocab = {}  # mapping from a word (string) to a Vocab object
         self.index2word = []  # map from a word's matrix index (int) to word (string)
@@ -437,6 +441,7 @@ class Word2Vec(utils.SaveLoad):
         self.total_train_time = 0
         self.sorted_vocab = sorted_vocab
         self.batch_words = batch_words
+        self.pretrained_emb = pretrained_emb
 
         if sentences is not None:
             if isinstance(sentences, GeneratorType):
@@ -978,12 +983,40 @@ class Word2Vec(utils.SaveLoad):
 
     def reset_weights(self):
         """Reset all projection weights to an initial (untrained) state, but keep the existing vocabulary."""
+
+        #if pre-trained embedding file is given, load it
+        p_emb = {}
+        t = time.time()
+        if self.pretrained_emb != None:
+            logger.info("loading pre-trained embeddings")
+            with utils.smart_open(self.pretrained_emb) as fin:
+                header = utils.to_unicode(fin.readline(), encoding="utf8")
+                vocab_size, vector_size = map(int, header.split())
+                if vector_size != self.vector_size:
+                    logger.info("pre-trained embedding vector size is different to the specified training vector size; pre-trained embeddings will be ignored")
+                else:
+                    for line_no, line in enumerate(fin):
+                        parts = utils.to_unicode(line.rstrip(), encoding="utf-8", errors="strict").split(" ")
+                        if len(parts) != self.vector_size + 1:
+                            raise ValueError("invalid vector on line %s (is this really the text format?)" % (line_no))
+                        word, weights = parts[0], list(map(REAL, parts[1:]))
+                        if word in self.vocab:
+                            p_emb[word] = weights
+                        if line_no % 10000 == 0:
+                            logger.info(str(line_no) + " lines processed (" + str(time.time()-t) + "s); " + str(len(p_emb)) + " embeddings collected")
+                            t = time.time()
+        
         logger.info("resetting layer weights")
         self.syn0 = empty((len(self.vocab), self.vector_size), dtype=REAL)
         # randomize weights vector by vector, rather than materializing a huge random matrix in RAM at once
         for i in xrange(len(self.vocab)):
-            # construct deterministic seed from word AND seed argument
-            self.syn0[i] = self.seeded_vector(self.index2word[i] + str(self.seed))
+            word = self.index2word[i]
+            if (len(p_emb) > 0) and (word in p_emb):
+                #use pre-trained embeddings
+                self.syn0[i] = p_emb[word]
+            else:
+                # construct deterministic seed from word AND seed argument
+                self.syn0[i] = self.seeded_vector(word + str(self.seed))
         if self.hs:
             self.syn1 = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
         if self.negative:
@@ -1636,6 +1669,7 @@ if __name__ == "__main__":
     parser.add_argument("-cbow", help="Use the continuous bag of words model; default is 1 (use 0 for skip-gram model)", type=int, default=1, choices=[0, 1])
     parser.add_argument("-binary", help="Save the resulting vectors in binary mode; default is 0 (off)", type=int, default=0, choices=[0, 1])
     parser.add_argument("-accuracy", help="Use questions from file ACCURACY to evaluate the model")
+    parser.add_argument("-pretrained_emb", help="Use pre-trained embeddings; format = original C word2vec-tool non-binary format (i.e. one embedding per word)")
 
     args = parser.parse_args()
 
@@ -1646,7 +1680,7 @@ if __name__ == "__main__":
 
     corpus = LineSentence(args.train)
 
-    model = Word2Vec(corpus, size=args.size, min_count=args.min_count, workers=args.threads, window=args.window,sample=args.sample,sg=skipgram,hs=args.hs,negative=args.negative,cbow_mean=1,iter=args.iter)
+    model = Word2Vec(corpus, size=args.size, min_count=args.min_count, workers=args.threads, window=args.window,sample=args.sample,sg=skipgram,hs=args.hs,negative=args.negative,cbow_mean=1,iter=args.iter,pretrained_emb=args.pretrained_emb)
 
     if args.output:
         outfile = args.output
