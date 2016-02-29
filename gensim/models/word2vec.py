@@ -88,7 +88,7 @@ except ImportError:
 
 from numpy import exp, log, dot, zeros, outer, random, dtype, float32 as REAL,\
     uint32, seterr, array, uint8, vstack, fromstring, sqrt, newaxis,\
-    ndarray, empty, sum as np_sum, prod, ones, ascontiguousarray
+    ndarray, empty, sum as np_sum, prod, ones, ascontiguousarray, concatenate
 
 from gensim import utils, matutils  # utility fnc for pickling, common scipy operations etc
 from six import iteritems, itervalues, string_types
@@ -984,8 +984,12 @@ class Word2Vec(utils.SaveLoad):
     def reset_weights(self):
         """Reset all projection weights to an initial (untrained) state, but keep the existing vocabulary."""
 
+        logger.info("resetting layer weights")
+        self.syn0 = empty((len(self.vocab), self.vector_size), dtype=REAL)
+
         #if pre-trained embedding file is given, load it
         p_emb = {}
+        syn0_oov = []
         t = time.time()
         if self.pretrained_emb != None:
             logger.info("loading pre-trained embeddings")
@@ -1002,14 +1006,20 @@ class Word2Vec(utils.SaveLoad):
                         word, weights = parts[0], list(map(REAL, parts[1:]))
                         if word in self.vocab:
                             p_emb[word] = weights
+                        else:
+                            #0 count so that it doesn't add itself to the cum_table when loaded in the future;
+                            #max sample_int value so that it is not discarded in word window during test infererence (for doc2vec)
+                            v = Vocab(count=0, sample_int=2**32)
+                            v.index = len(self.vocab)
+                            self.index2word.append(word)
+                            self.vocab[word] = v
+                            syn0_oov.append(weights)
                         if line_no % 10000 == 0:
                             logger.info(str(line_no) + " lines processed (" + str(time.time()-t) + "s); " + str(len(p_emb)) + " embeddings collected")
                             t = time.time()
         
-        logger.info("resetting layer weights")
-        self.syn0 = empty((len(self.vocab), self.vector_size), dtype=REAL)
         # randomize weights vector by vector, rather than materializing a huge random matrix in RAM at once
-        for i in xrange(len(self.vocab)):
+        for i in xrange(len(self.vocab)-len(syn0_oov)):
             word = self.index2word[i]
             if (len(p_emb) > 0) and (word in p_emb):
                 #use pre-trained embeddings
@@ -1024,6 +1034,10 @@ class Word2Vec(utils.SaveLoad):
         self.syn0norm = None
 
         self.syn0_lockf = ones(len(self.vocab), dtype=REAL)  # zeros suppress learning
+
+        # append the oov syn0 weights to syn0
+        if len(syn0_oov) > 0:
+            self.syn0 = concatenate((self.syn0, syn0_oov), axis=0)
 
     def seeded_vector(self, seed_string):
         """Create one 'random' vector (but deterministic by seed_string)"""
