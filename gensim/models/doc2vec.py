@@ -517,7 +517,7 @@ class Doc2Vec(Word2Vec):
                  max_vocab_size=None, sample=0, seed=1, workers=1, min_alpha=0.0001,
                  dm=1, hs=1, negative=0, dbow_words=0, dm_mean=0, dm_concat=0, dm_tag_count=1,
                  docvecs=None, docvecs_mapfile=None, comment=None, trim_rule=None,
-                 pretrained_emb=None, **kwargs):
+                 pretrained_emb=None, pretrained_emb_context=None, **kwargs):
         """
         Initialize the model from an iterable of `documents`. Each document is a
         TaggedDocument object that will be used for training.
@@ -580,12 +580,15 @@ class Doc2Vec(Word2Vec):
 
          `pretrained_emb` = takes in pre-trained embedding for word vectors; format = original C word2vec-tool non-binary format (i.e. one embedding per word)
 
+         `pretrained_emb_context` = takes in pre-trained context embedding for word vectors; format = original C word2vec-tool non-binary format (i.e. one context embedding per word)
+
         """
         super(Doc2Vec, self).__init__(
             size=size, alpha=alpha, window=window, min_count=min_count, max_vocab_size=max_vocab_size,
             sample=sample, seed=seed, workers=workers, min_alpha=min_alpha,
             sg=(1+dm) % 2, hs=hs, negative=negative, cbow_mean=dm_mean,
-            null_word=dm_concat, pretrained_emb=pretrained_emb, **kwargs)
+            null_word=dm_concat, pretrained_emb=pretrained_emb, 
+            pretrained_emb_context=pretrained_emb_context, **kwargs)
         self.dbow_words = dbow_words
         self.dm_concat = dm_concat
         self.dm_tag_count = dm_tag_count

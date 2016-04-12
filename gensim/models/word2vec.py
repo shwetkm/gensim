@@ -346,7 +346,7 @@ class Word2Vec(utils.SaveLoad):
             max_vocab_size=None, sample=1e-3, seed=1, workers=3, min_alpha=0.0001,
             sg=0, hs=0, negative=5, cbow_mean=1, hashfxn=hash, iter=5, null_word=0,
             trim_rule=None, sorted_vocab=1, batch_words=MAX_WORDS_IN_BATCH, 
-            pretrained_emb=None):
+            pretrained_emb=None, pretrained_emb_context=None):
         """
         Initialize the model from an iterable of `sentences`. Each sentence is a
         list of words (unicode strings) that will be used for training.
@@ -413,6 +413,8 @@ class Word2Vec(utils.SaveLoad):
 
         `pretrained_emb` = takes in pre-trained embedding for word vectors; format = original C word2vec-tool non-binary format (i.e. one embedding per word)
 
+        `pretrained_emb_context` = takes in pre-trained context embedding for word vectors; format = original C word2vec-tool non-binary format (i.e. one context embedding per word); note that this option is only turned on when -pretrained_emb is active
+
         """
         self.vocab = {}  # mapping from a word (string) to a Vocab object
         self.index2word = []  # map from a word's matrix index (int) to word (string)
@@ -442,6 +444,7 @@ class Word2Vec(utils.SaveLoad):
         self.sorted_vocab = sorted_vocab
         self.batch_words = batch_words
         self.pretrained_emb = pretrained_emb
+        self.pretrained_emb_context = pretrained_emb_context
 
         if sentences is not None:
             if isinstance(sentences, GeneratorType):
@@ -989,6 +992,7 @@ class Word2Vec(utils.SaveLoad):
 
         #if pre-trained embedding file is given, load it
         p_emb = {}
+        p_emb_context = {}
         syn0_oov = []
         t = time.time()
         if self.pretrained_emb != None:
@@ -1014,9 +1018,30 @@ class Word2Vec(utils.SaveLoad):
                             self.index2word.append(word)
                             self.vocab[word] = v
                             syn0_oov.append(weights)
-                        if line_no % 10000 == 0:
+                        if line_no % 100000 == 0:
                             logger.info(str(line_no) + " lines processed (" + str(time.time()-t) + "s); " + str(len(p_emb)) + " embeddings collected")
                             t = time.time()
+
+            #pre-trained context embeddings
+            t = time.time()
+            if self.pretrained_emb_context != None:
+                logger.info("loading pre-trained context embeddings")
+                with utils.smart_open(self.pretrained_emb_context) as fin:
+                    header = utils.to_unicode(fin.readline(), encoding="utf8")
+                    vocab_size, vector_size = map(int, header.split())
+                    if vector_size != self.layer1_size:
+                        logger.info("pre-trained context embedding vector size is different to the specified training vector size; pre-trained context embeddings will be ignored")
+                    else:
+                        for line_no, line in enumerate(fin):
+                            parts = utils.to_unicode(line.rstrip(), encoding="utf-8", errors="strict").split(" ")
+                            if len(parts) != self.layer1_size + 1:
+                                raise ValueError("invalid vector on line %s (is this really the text format?)" % (line_no))
+                            word, weights = parts[0], list(map(REAL, parts[1:]))
+                            if word in self.vocab:
+                                p_emb_context[word] = weights
+                            if line_no % 100000 == 0:
+                                logger.info(str(line_no) + " lines processed (" + str(time.time()-t) + "s); " + str(len(p_emb_context)) + " context embeddings collected")
+                                t = time.time()
         
         # randomize weights vector by vector, rather than materializing a huge random matrix in RAM at once
         for i in xrange(len(self.vocab)-len(syn0_oov)):
@@ -1031,6 +1056,13 @@ class Word2Vec(utils.SaveLoad):
             self.syn1 = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
         if self.negative:
             self.syn1neg = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
+            if len(p_emb_context) > 0:
+                for i in xrange(len(self.vocab)):
+                    word = self.index2word[i]
+                    if (word in p_emb_context):
+                        #use pre-trained embeddings
+                        self.syn1neg[i] = p_emb_context[word]
+
         self.syn0norm = None
 
         self.syn0_lockf = ones(len(self.vocab), dtype=REAL)  # zeros suppress learning
@@ -1045,7 +1077,7 @@ class Word2Vec(utils.SaveLoad):
         once = random.RandomState(self.hashfxn(seed_string) & 0xffffffff)
         return (once.rand(self.vector_size) - 0.5) / self.vector_size
 
-    def save_word2vec_format(self, fname, fvocab=None, binary=False):
+    def save_word2vec_format(self, fname, fname_context=None, fvocab=None, binary=False):
         """
         Store the input-hidden weight matrix in the same format used by the original
         C word2vec-tool, for compatibility.
@@ -1067,6 +1099,17 @@ class Word2Vec(utils.SaveLoad):
                     fout.write(utils.to_utf8(word) + b" " + row.tostring())
                 else:
                     fout.write(utils.to_utf8("%s %s\n" % (word, ' '.join("%f" % val for val in row))))
+        # output context vectors (syn1neg) if fname_context is given
+        if fname_context is not None and len(self.syn1neg) == len(self.vocab):
+            with utils.smart_open(fname_context, 'wb') as fout:
+                fout.write(utils.to_utf8("%s %s\n" % self.syn1neg.shape))
+                # store in sorted order: most frequent words at the top
+                for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
+                    row = self.syn1neg[vocab.index]
+                    if binary:
+                        fout.write(utils.to_utf8(word) + b" " + row.tostring())
+                    else:
+                        fout.write(utils.to_utf8("%s %s\n" % (word, ' '.join("%f" % val for val in row))))
 
     @classmethod
     def load_word2vec_format(cls, fname, fvocab=None, binary=False, encoding='utf8', unicode_errors='strict'):
@@ -1684,6 +1727,7 @@ if __name__ == "__main__":
     parser.add_argument("-binary", help="Save the resulting vectors in binary mode; default is 0 (off)", type=int, default=0, choices=[0, 1])
     parser.add_argument("-accuracy", help="Use questions from file ACCURACY to evaluate the model")
     parser.add_argument("-pretrained_emb", help="Use pre-trained embeddings; format = original C word2vec-tool non-binary format (i.e. one embedding per word)")
+    parser.add_argument("-pretrained_emb_context", help="Use pre-trained context embeddings; format = original C word2vec-tool non-binary format (i.e. one context embedding per word); note that this option is only turned on when -pretrained_emb is active")
 
     args = parser.parse_args()
 
@@ -1694,7 +1738,7 @@ if __name__ == "__main__":
 
     corpus = LineSentence(args.train)
 
-    model = Word2Vec(corpus, size=args.size, min_count=args.min_count, workers=args.threads, window=args.window,sample=args.sample,sg=skipgram,hs=args.hs,negative=args.negative,cbow_mean=1,iter=args.iter,pretrained_emb=args.pretrained_emb)
+    model = Word2Vec(corpus, size=args.size, min_count=args.min_count, workers=args.threads, window=args.window,sample=args.sample,sg=skipgram,hs=args.hs,negative=args.negative,cbow_mean=1,iter=args.iter,pretrained_emb=args.pretrained_emb, pretrained_emb_context=args.pretrained_emb_context)
 
     if args.output:
         outfile = args.output
