@@ -1014,8 +1014,8 @@ class Word2Vec(utils.SaveLoad):
                             self.index2word.append(word)
                             self.vocab[word] = v
                             syn0_oov.append(weights)
-                        if line_no % 10000 == 0:
-                            logger.info(str(line_no) + " lines processed (" + str(time.time()-t) + "s); " + str(len(p_emb)) + " embeddings collected")
+                        if ((line_no+1) % 10000) == 0 or ((line_no+1) == vocab_size):
+                            logger.info(str(line_no+1) + " lines processed (" + str(time.time()-t) + "s); " + str(len(p_emb)) + " embeddings collected")
                             t = time.time()
         
         # randomize weights vector by vector, rather than materializing a huge random matrix in RAM at once
